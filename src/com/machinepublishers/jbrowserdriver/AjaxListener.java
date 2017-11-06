@@ -143,6 +143,7 @@ class AjaxListener implements Runnable {
                 configureStatusCode();
             } catch (StatusCodeConfigurationException ex) {
                 LOGGER.log(Level.FINE, "A problem related to code status configuration occured", ex);
+                return;
             }
         }
     }
