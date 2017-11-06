@@ -98,42 +98,96 @@ class AjaxListener implements Runnable {
         statusCode.notifyAll();
     }
 
+    int computeIdleCount(int size, int idleCount) {
+        int newValue = idleCount;
+        if (size == 0) {
+            ++newValue;
+        } else {
+            newValue = 0;
+        }
+        return newValue;
+    }
+
+    ResourcesSizeStatus updateResourcesSizeInTime(final Settings settings) {
+        long time = System.currentTimeMillis();
+        int size = harmonizeResources(time, settings);
+        return new ResourcesSizeStatus(time, size);
+    }
+
+    ResourcesStatus handleResource(final long sleepMS, final int idleCountValue, final int idleCountTarget, final Settings settings) {
+
+        ResourcesStatus status = new ResourcesStatus();
+        try {
+            Thread.sleep(sleepMS);
+        } catch (InterruptedException e) {
+            LOGGER.log(Level.FINE, "An attempt to put a thread to sleep generated an exception ", e);
+            status.setHandlingStatus(ResourceHandlingStatus.INVALID);
+            return status;
+        }
+
+        ResourcesSizeStatus sizeStatus = updateResourcesSizeInTime(settings);
+        status.setSizeStatus(sizeStatus);
+
+        if (!sizeStatus.isSizeprovided()) {
+            LOGGER.log(Level.FINE, "Invalid resources size: check underlying issue ");
+            status.setHandlingStatus(ResourceHandlingStatus.INVALID);
+            return status;
+        }
+
+        int size = sizeStatus.getSize();
+
+        int idleCount = computeIdleCount(size, idleCountValue);
+        status.setIdleCount(idleCount);
+
+        if (idleCount == idleCountTarget) {
+            status.setHandlingStatus(ResourceHandlingStatus.REACHED_IDLE_COUNT_TARGET);
+            return status;
+        }
+
+        status.setHandlingStatus(ResourceHandlingStatus.VALID);
+        return status;
+    }
+
+    
+
     /**
      * {@inheritDoc}
      */
     @Override
     public void run() {
+
         while (true) {
+
             harmonizeStatusCode();
+
             int size = 0;
+
             final long start = System.currentTimeMillis();
             long time = start;
+
             final Settings settings = SettingsManager.settings();
+
             final AtomicBoolean done = new AtomicBoolean();
             Platform.runLater(() -> harmonize(done));
+
             if (settings != null) {
+
                 final long sleepMS = Math.max(settings.ajaxWait() / IDLE_COUNT_TARGET, 0);
                 int idleCount = 0;
                 int idleCountTarget = sleepMS == 0 ? 1 : IDLE_COUNT_TARGET;
 
                 while (time - start < (timeoutMS.get() <= 0 ? MAX_WAIT_DEFAULT : timeoutMS.get())) {
-                    try {
-                        Thread.sleep(sleepMS);
-                    } catch (InterruptedException e) {
-                        return;
-                    }
-                    time = System.currentTimeMillis();
-                    size = harmonizeResources(time, settings);
-                    if (size == -1) {
+
+                    ResourcesStatus resourcesStatus = handleResource(sleepMS, idleCount, idleCountTarget, settings );
+                    if (resourcesStatus.getHandlingStatus() == ResourceHandlingStatus.INVALID) {
                         return;
                     }
 
-                    if (size == 0) {
-                        ++idleCount;
-                    } else {
-                        idleCount = 0;
-                    }
-                    if (idleCount == idleCountTarget) {
+                    time = resourcesStatus.getSizeStatus().getTime();
+                    size = resourcesStatus.getSizeStatus().getSize();
+
+                    idleCount = resourcesStatus.getIdleCount();
+                    if (resourcesStatus.getHandlingStatus() == ResourceHandlingStatus.REACHED_IDLE_COUNT_TARGET) {
                         break;
                     }
                 }
@@ -146,5 +200,71 @@ class AjaxListener implements Runnable {
                 return;
             }
         }
+    }
+
+    class ResourcesSizeStatus {
+        private long time;
+        private int size;
+
+        public ResourcesSizeStatus(long time, int size) {
+            this.time = time;
+            this.size = size;
+        }
+
+        public boolean isSizeprovided() {
+            return size != -1;
+        }
+
+        public long getTime() {
+            return time;
+        }
+
+        public int getSize() {
+            return size;
+        }
+    }
+
+    class ResourcesStatus {
+        private ResourcesSizeStatus sizeStatus;
+        private int idleCount;
+        private ResourceHandlingStatus handlingStatus;
+
+        public ResourcesStatus() {
+        }
+
+        public ResourcesStatus(ResourcesSizeStatus sizeStatus, int idleCount) {
+            this.sizeStatus = sizeStatus;
+            this.idleCount = idleCount;
+        }
+
+        public ResourcesSizeStatus getSizeStatus() {
+            return sizeStatus;
+        }
+
+        public int getIdleCount() {
+            return idleCount;
+        }
+
+        public void setSizeStatus(ResourcesSizeStatus sizeStatus) {
+            this.sizeStatus = sizeStatus;
+        }
+
+        public void setIdleCount(int idleCount) {
+            this.idleCount = idleCount;
+        }
+
+        public ResourceHandlingStatus getHandlingStatus() {
+            return handlingStatus;
+        }
+
+        public void setHandlingStatus(ResourceHandlingStatus handlingStatus) {
+            this.handlingStatus = handlingStatus;
+        }
+    }
+
+    enum ResourceHandlingStatus {
+        INVALID,
+        REACHED_IDLE_COUNT_TARGET,
+        VALID
     }
 }
